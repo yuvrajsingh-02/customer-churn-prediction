@@ -1,0 +1,73 @@
+"""Train a customer churn classifier and save evaluation metrics."""
+from pathlib import Path
+import json
+import joblib
+import pandas as pd
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.pipeline import Pipeline
+from sklearn.impute import SimpleImputer
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, classification_report
+
+ROOT = Path(__file__).resolve().parent
+DATA_PATH = ROOT / "data" / "customer_churn.csv"
+MODEL_DIR = ROOT / "models"
+MODEL_DIR.mkdir(exist_ok=True)
+
+df = pd.read_csv(DATA_PATH)
+target = "churn"
+drop_cols = ["customer_id", target]
+X = df.drop(columns=drop_cols)
+y = df[target].map({"No": 0, "Yes": 1})
+
+numeric_features = ["tenure_months", "monthly_charges", "support_calls"]
+categorical_features = [c for c in X.columns if c not in numeric_features]
+
+numeric_pipe = Pipeline([
+    ("imputer", SimpleImputer(strategy="median")),
+    ("scaler", StandardScaler())
+])
+categorical_pipe = Pipeline([
+    ("imputer", SimpleImputer(strategy="most_frequent")),
+    ("encoder", OneHotEncoder(handle_unknown="ignore"))
+])
+preprocessor = ColumnTransformer([
+    ("num", numeric_pipe, numeric_features),
+    ("cat", categorical_pipe, categorical_features)
+])
+model = Pipeline([
+    ("preprocess", preprocessor),
+    ("classifier", RandomForestClassifier(
+        n_estimators=250, max_depth=10, min_samples_leaf=3,
+        class_weight="balanced", random_state=42
+    ))
+])
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42, stratify=y
+)
+model.fit(X_train, y_train)
+pred = model.predict(X_test)
+prob = model.predict_proba(X_test)[:, 1]
+metrics = {
+    "test_rows": int(len(y_test)),
+    "accuracy": round(float(accuracy_score(y_test, pred)), 4),
+    "precision": round(float(precision_score(y_test, pred, zero_division=0)), 4),
+    "recall": round(float(recall_score(y_test, pred, zero_division=0)), 4),
+    "f1_score": round(float(f1_score(y_test, pred, zero_division=0)), 4),
+    "roc_auc": round(float(roc_auc_score(y_test, prob)), 4),
+    "note": "Metrics are from a synthetic demonstration dataset and are not evidence of real-world performance."
+}
+joblib.dump(model, MODEL_DIR / "churn_pipeline.joblib")
+(MODEL_DIR / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+(ROOT / "model_evaluation.txt").write_text(
+    "CUSTOMER CHURN MODEL EVALUATION\n\n" +
+    json.dumps(metrics, indent=2) + "\n\nClassification report:\n" +
+    classification_report(y_test, pred, target_names=["No Churn", "Churn"], zero_division=0),
+    encoding="utf-8"
+)
+print("Model trained successfully.")
+print(json.dumps(metrics, indent=2))
+print(f"Saved model to: {MODEL_DIR / 'churn_pipeline.joblib'}")
